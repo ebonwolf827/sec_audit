@@ -573,23 +573,37 @@ act_block_exec() {
 response_summary() {
     section "响应动作汇总"
 
+    # 安全使用计数器（防止未初始化）
+    local actions_taken=${RESPONSE_ACTIONS_TAKEN:-0}
+    local actions_dry=${RESPONSE_ACTIONS_DRY:-0}
+    local actions_skipped=${RESPONSE_ACTIONS_SKIPPED:-0}
+    local actions_failed=${RESPONSE_ACTIONS_FAILED:-0}
+
     log ""
     log "  响应级别: L${RESPONSE_LEVEL}$($DRY_RUN && echo ' [干跑模式]' || echo '')"
-    log "  已执行动作: $RESPONSE_ACTIONS_TAKEN 项"
-    log "  干跑预览:   $RESPONSE_ACTIONS_DRY 项"
-    log "  跳过:       $RESPONSE_ACTIONS_SKIPPED 项"
-    log "  执行失败:   $RESPONSE_ACTIONS_FAILED 项"
+    log "  已执行动作: $actions_taken 项"
+    log "  干跑预览:   $actions_dry 项"
+    log "  跳过:       $actions_skipped 项"
+    log "  执行失败:   $actions_failed 项"
 
-    # 组合响应统计
+    # 组合响应统计（修复版：使用 count_matches 工具函数）
     if [[ -f "$RESPONSE_LOG" ]]; then
         local reverse_count
-        reverse_count=$(grep -c "REVERSE_SHELL_RESPONSE" "$RESPONSE_LOG" 2>/dev/null || echo 0)
-        [[ "$reverse_count" -gt 0 ]] && \
+        if declare -f count_matches &>/dev/null; then
+            reverse_count=$(count_matches "REVERSE_SHELL_RESPONSE" "$RESPONSE_LOG")
+        else
+            reverse_count=$(grep -c "REVERSE_SHELL_RESPONSE" "$RESPONSE_LOG" 2>/dev/null || true)
+            reverse_count=$(echo "${reverse_count:-0}" | head -1 | tr -d '[:space:]')
+            [[ "$reverse_count" =~ ^[0-9]+$ ]] || reverse_count=0
+        fi
+
+        if [[ "$reverse_count" -gt 0 ]]; then
             log "  反弹 Shell 组合响应: $reverse_count 次"
+        fi
     fi
 
     # eBPF 阻断统计
-    if [[ -x "$EBPF_CTL" ]]; then
+    if [[ -x "${EBPF_CTL:-}" ]]; then
         log ""
         log "  --- eBPF 阻断统计 ---"
         "$EBPF_CTL" stats 2>/dev/null | while read -r line; do
@@ -598,11 +612,13 @@ response_summary() {
     fi
 
     log ""
-    log "  审计日志:   $RESPONSE_LOG"
-    log "  隔离目录:   $RESPONSE_QUARANTINE_DIR"
-    log "  证据目录:   $RESPONSE_EVIDENCE_DIR"
-    [[ -f "${RESPONSE_ROLLBACK_DIR}/actions.log" ]] && \
+    log "  审计日志:   ${RESPONSE_LOG:-未设置}"
+    log "  隔离目录:   ${RESPONSE_QUARANTINE_DIR:-未设置}"
+    log "  证据目录:   ${RESPONSE_EVIDENCE_DIR:-未设置}"
+
+    if [[ -f "${RESPONSE_ROLLBACK_DIR:-}/actions.log" ]]; then
         log "  回滚记录:   ${RESPONSE_ROLLBACK_DIR}/actions.log"
+    fi
 }
 
 response_rollback() {

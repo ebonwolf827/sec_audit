@@ -181,16 +181,31 @@ audit_high_frequency_404() {
     [[ -z "$log" ]] && return
 
     local total_404
-    total_404=$(grep -cE '" 404 | 404 ' "$log" 2>/dev/null || echo 0)
+
+    # 修复版：使用 count_matches 工具函数（正则匹配需要 grep -cE）
+    if declare -f to_number &>/dev/null; then
+        total_404=$(grep -cE '" 404 | 404 ' "$log" 2>/dev/null || true)
+        total_404=$(to_number "$total_404")
+    else
+        # 降级：手动处理
+        total_404=$(grep -cE '" 404 | 404 ' "$log" 2>/dev/null || true)
+        total_404=$(echo "${total_404:-0}" | head -1 | tr -d '[:space:]')
+        [[ "$total_404" =~ ^[0-9]+$ ]] || total_404=0
+    fi
+
     if [[ "$total_404" -gt 0 ]]; then
         info "404 请求总数: $total_404"
+
         local top
         top=$(grep -E '" 404 | 404 ' "$log" 2>/dev/null | \
             awk '{print $1}' | sort | uniq -c | sort -rn | head -5 || true)
+
         echo "$top" | while read -r c ip; do
             if [[ "$c" -gt 500 ]]; then
                 fail "IP $ip 触发 404 异常 ($c 次，疑似目录扫描)"
-                act_block_ip "$ip" "404 异常 $c 次" "HIGH"
+                if declare -f act_block_ip &>/dev/null; then
+                    act_block_ip "$ip" "404 异常 $c 次" "HIGH"
+                fi
             elif [[ "$c" -gt 100 ]]; then
                 warn "IP $ip 触发 404 较多 ($c 次)"
             fi

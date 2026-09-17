@@ -473,27 +473,54 @@ check_falco_status() {
 analyze_falco_alerts() {
     info "--- Falco 告警分析 ---"
 
-    [[ ! -f "$FALCO_ALERT_FILE" ]] && {
+    if [[ ! -f "$FALCO_ALERT_FILE" ]]; then
         info "无告警文件，跳过分析"
         return
-    }
+    fi
 
+    # 安全统计总行数
     local total_alerts
-    total_alerts=$(wc -l < "$FALCO_ALERT_FILE" 2>/dev/null || echo 0)
-    [[ "$total_alerts" -eq 0 ]] && {
+    if declare -f count_lines &>/dev/null; then
+        total_alerts=$(count_lines "$FALCO_ALERT_FILE")
+    else
+        total_alerts=$(wc -l < "$FALCO_ALERT_FILE" 2>/dev/null || true)
+        total_alerts=$(echo "${total_alerts:-0}" | head -1 | tr -d '[:space:]')
+        [[ "$total_alerts" =~ ^[0-9]+$ ]] || total_alerts=0
+    fi
+
+    if [[ "$total_alerts" -eq 0 ]]; then
         pass "Falco 未产生告警"
         return
-    }
+    fi
 
     info "Falco 告警总数: $total_alerts"
 
-    # 按优先级统计
-    local critical_count high_count medium_count
-    critical_count=$(grep -c '"priority":"Critical"\|"priority":"Emergency"\|"priority":"Alert"' \
-        "$FALCO_ALERT_FILE" 2>/dev/null || echo 0)
-    high_count=$(grep -c '"priority":"Error"' "$FALCO_ALERT_FILE" 2>/dev/null || echo 0)
-    medium_count=$(grep -c '"priority":"Warning"\|"priority":"Notice"' \
-        "$FALCO_ALERT_FILE" 2>/dev/null || echo 0)
+    # 按优先级统计（修复版：使用 count_matches 工具函数）
+    local critical_count=0 high_count=0 medium_count=0
+
+    if declare -f count_matches &>/dev/null; then
+        # 使用工具函数（推荐）
+        critical_count=$(count_matches '"priority":"Critical"' "$FALCO_ALERT_FILE")
+        critical_count=$((critical_count + $(count_matches '"priority":"Emergency"' "$FALCO_ALERT_FILE")))
+        critical_count=$((critical_count + $(count_matches '"priority":"Alert"' "$FALCO_ALERT_FILE")))
+        high_count=$(count_matches '"priority":"Error"' "$FALCO_ALERT_FILE")
+        medium_count=$(count_matches '"priority":"Warning"' "$FALCO_ALERT_FILE")
+        medium_count=$((medium_count + $(count_matches '"priority":"Notice"' "$FALCO_ALERT_FILE")))
+    else
+        # 降级：手动处理
+        local tmp
+        tmp=$(grep -c '"priority":"Critical"' "$FALCO_ALERT_FILE" 2>/dev/null || true)
+        critical_count=$(echo "${tmp:-0}" | head -1 | tr -d '[:space:]')
+        [[ "$critical_count" =~ ^[0-9]+$ ]] || critical_count=0
+
+        tmp=$(grep -c '"priority":"Error"' "$FALCO_ALERT_FILE" 2>/dev/null || true)
+        high_count=$(echo "${tmp:-0}" | head -1 | tr -d '[:space:]')
+        [[ "$high_count" =~ ^[0-9]+$ ]] || high_count=0
+
+        tmp=$(grep -c '"priority":"Warning"' "$FALCO_ALERT_FILE" 2>/dev/null || true)
+        medium_count=$(echo "${tmp:-0}" | head -1 | tr -d '[:space:]')
+        [[ "$medium_count" =~ ^[0-9]+$ ]] || medium_count=0
+    fi
 
     log "       优先级分布: CRITICAL=$critical_count HIGH=$high_count MEDIUM=$medium_count"
 
@@ -504,14 +531,13 @@ analyze_falco_alerts() {
         printf "       %-5s %s\n" "$count" "$rule" | tee -a "$REPORT_FILE"
     done
 
-    # CRITICAL 级别告警详细输出
+    # CRITICAL 级别告警详情
     if [[ "$critical_count" -gt 0 ]]; then
         fail "Falco 发现 $critical_count 条 CRITICAL 级别告警:"
         grep '"priority":"Critical"\|"priority":"Emergency"\|"priority":"Alert"' \
             "$FALCO_ALERT_FILE" 2>/dev/null | tail -5 | while IFS= read -r line; do
-            local rule cmd output
+            local rule output
             rule=$(echo "$line" | grep -oP '"rule":"\K[^"]+' | head -1)
-            cmd=$(echo "$line" | grep -oP '"proc.cmdline":"\K[^"]+' | head -1)
             output=$(echo "$line" | grep -oP '"output":"\K[^"]+' | head -1)
             log "       └─ [$rule] ${output:0:150}"
         done
@@ -533,8 +559,6 @@ analyze_falco_alerts() {
     # 导出摘要
     generate_falco_summary
 }
-
-# 生成 Falco 告警摘要
 generate_falco_summary() {
     local summary_file="${REPORT_BASE_DIR}/falco_alerts_summary_${TIMESTAMP}.txt"
 
